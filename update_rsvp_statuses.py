@@ -75,6 +75,19 @@ RECEPTION_STATUS_SELECTOR = "td.response.main:nth-child(5) div[title]"
 # separately or as one combined RSVP.
 STATUS_COLUMNS_TO_UPDATE = "both"
 
+# =====================================================================
+# ZOLA SETTINGS -- fill these in the same way, using Zola's own pages
+# =====================================================================
+ 
+ZOLA_LOGIN_URL = "https://www.zola.com/account/login"
+# TODO: URL of your guest list / RSVP manager page on Zola once logged in
+ZOLA_GUEST_LIST_URL = "https://www.zola.com/wedding/manage/guests/rsvps/overview"
+# TODO: selector for whatever button/link triggers the CSV/Excel export
+# on Zola's guest list page (right-click it -> Inspect to find a selector)
+ZOLA_EXPORT_BUTTON_SELECTOR = "button:has-text('Export')"  # PLACEHOLDER
+# Where the downloaded file should be saved locally
+ZOLA_DOWNLOAD_PATH = "zola_rsvp_export.csv"
+
 # Credentials: read from a .env file (not hardcoded, not committed to git).
 # Create a file named ".env" in the same folder as this script containing:
 #   AISLEPLANNER_EMAIL=you@example.com
@@ -83,6 +96,8 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
+ZOLA_EMAIL = os.environ.get("ZOLA_EMAIL")
+ZOLA_PASSWORD = os.environ.get("ZOLA_PASSWORD")
 EMAIL = os.environ.get("AISLEPLANNER_EMAIL")
 PASSWORD = os.environ.get("AISLEPLANNER_PASSWORD")
 
@@ -131,6 +146,38 @@ def load_guest_updates(csv_path: str) -> dict:
 
             updates[name] = target_status
     return updates
+
+
+def download_zola_rsvp_csv(page: Page) -> str:
+    """
+    Logs into Zola and downloads the guest/RSVP export CSV.
+    Returns the local path of the downloaded file.
+    """
+    if not ZOLA_EMAIL or not ZOLA_PASSWORD:
+        raise RuntimeError(
+            "Missing Zola credentials. Add ZOLA_EMAIL and ZOLA_PASSWORD to "
+            "your .env file (see .env.example)."
+        )
+ 
+    page.goto(ZOLA_LOGIN_URL)
+    # TODO: confirm these field selectors match Zola's actual login form
+    page.fill("input[type='email']", ZOLA_EMAIL)
+    page.fill("input[type='password']", ZOLA_PASSWORD)
+    page.click("button[type='submit']")
+    page.wait_for_load_state("networkidle")
+ 
+    page.goto(ZOLA_GUEST_LIST_URL)
+    page.wait_for_selector(ZOLA_EXPORT_BUTTON_SELECTOR, timeout=15000)
+ 
+    # Playwright needs to be told to expect a download before the click
+    # that triggers it, so it can capture the file.
+    with page.expect_download() as download_info:
+        page.click(ZOLA_EXPORT_BUTTON_SELECTOR)
+    download = download_info.value
+    download.save_as(ZOLA_DOWNLOAD_PATH)
+ 
+    print(f"Downloaded Zola RSVP export to {ZOLA_DOWNLOAD_PATH}")
+    return ZOLA_DOWNLOAD_PATH
 
 
 def login(page: Page):
@@ -207,17 +254,34 @@ def update_rsvps(page: Page, updates: dict):
 
 
 def main():
-    if len(sys.argv) != 2:
-        print("Usage: python update_rsvp_statuses.py <path_to_csv>")
-        sys.exit(1)
-
-    csv_path = sys.argv[1]
-    updates = load_guest_updates(csv_path)
-    print(f"Loaded {len(updates)} target statuses from {csv_path}")
-
+    csv_path = None
+    if "--csv" in sys.argv:
+        csv_path = sys.argv[sys.argv.index("--csv") + 1]
+ 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False, slow_mo=200)
-        page = browser.new_page()
+ 
+        if csv_path is None:
+            # Use a separate browser context (isolated cookies/session) for
+            # Zola so its login doesn't interfere with Aisle Planner's.
+            zola_context = browser.new_context(accept_downloads=True)
+            zola_page = zola_context.new_page()
+            try:
+                csv_path = download_zola_rsvp_csv(zola_page)
+            except PWTimeout:
+                print("Timed out on Zola -- check ZOLA_LOGIN_URL, "
+                      "ZOLA_GUEST_LIST_URL, and ZOLA_EXPORT_BUTTON_SELECTOR.")
+                browser.close()
+                return
+            finally:
+                zola_context.close()
+ 
+        updates = load_guest_updates(csv_path)
+        print(f"Loaded {len(updates)} target statuses from {csv_path}")
+ 
+        ap_context = browser.new_context()
+        page = ap_context.new_page()
+        page.set_viewport_size({"width": 1920, "height": 1080})
         try:
             login(page)
             update_rsvps(page, updates)
