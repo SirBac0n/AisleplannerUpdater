@@ -80,11 +80,18 @@ STATUS_COLUMNS_TO_UPDATE = "both"
 # =====================================================================
  
 ZOLA_LOGIN_URL = "https://www.zola.com/account/login"
-# TODO: URL of your guest list / RSVP manager page on Zola once logged in
+
+# URL of your guest list / RSVP manager page on Zola once logged in
 ZOLA_GUEST_LIST_URL = "https://www.zola.com/wedding/manage/guests/rsvps/overview"
-# TODO: selector for whatever button/link triggers the CSV/Excel export
-# on Zola's guest list page (right-click it -> Inspect to find a selector)
-ZOLA_EXPORT_BUTTON_SELECTOR = "button:has-text('Export')"  # PLACEHOLDER
+
+# The ".csv format" link in Zola's export dropdown points directly at this
+# API endpoint (found via inspector). Since it's just a GET request, once
+# we're logged in (and the browser context holds the session cookie) we
+# can fetch it directly instead of clicking through the UI -- faster and
+# less fragile than waiting on a dropdown to render.
+ZOLA_BASE_URL = "https://www.zola.com"
+ZOLA_CSV_EXPORT_PATH = "/web-api/v1/guestgroup/export/rsvp-overview"
+
 # Where the downloaded file should be saved locally
 ZOLA_DOWNLOAD_PATH = "zola_rsvp_export.csv"
 
@@ -158,23 +165,71 @@ def download_zola_rsvp_csv(page: Page) -> str:
             "Missing Zola credentials. Add ZOLA_EMAIL and ZOLA_PASSWORD to "
             "your .env file (see .env.example)."
         )
+    if "TODO" in ZOLA_GUEST_LIST_URL or "TODO" in ZOLA_LOGIN_URL:
+        raise RuntimeError(
+            "ZOLA_GUEST_LIST_URL and/or ZOLA_LOGIN_URL still contain a "
+            "placeholder value. Log into Zola manually, copy the real URLs "
+            "from your browser's address bar, and update the SITE-SPECIFIC "
+            "SETTINGS section at the top of this script."
+        )
  
     page.goto(ZOLA_LOGIN_URL)
-    # TODO: confirm these field selectors match Zola's actual login form
+    page.wait_for_selector("input[type='email']", timeout=15000)
     page.fill("input[type='email']", ZOLA_EMAIL)
     page.fill("input[type='password']", ZOLA_PASSWORD)
-    page.click("button[type='submit']")
-    page.wait_for_load_state("networkidle")
+ 
+    # Small buffer so the form's own validation (often triggered on
+    # blur/change) has time to run before we click -- clicking too fast
+    # can occasionally beat that validation and the click does nothing.
+    page.wait_for_timeout(500)
+ 
+    login_attempts = 0
+    while True:
+        login_attempts += 1
+        page.click("button.LOGIN-submit")
+        # Wait for the URL to actually change away from the login page,
+        # rather than trusting networkidle -- SPAs often keep background
+        # connections open, making networkidle fire inconsistently.
+        try:
+            page.wait_for_url(lambda url: url != ZOLA_LOGIN_URL, timeout=10000)
+        except PWTimeout:
+            pass
+ 
+        if page.url.rstrip("/") == ZOLA_BASE_URL.rstrip("/"):
+            # Landed on the homepage instead of being logged in -- login
+            # didn't take. Retry once before giving up.
+            if login_attempts >= 3:
+                raise RuntimeError(
+                    "Zola login redirected to the homepage 3 times in a row. "
+                    "Check for a CAPTCHA, 2FA prompt, or incorrect credentials "
+                    "by watching the browser window during a manual run."
+                )
+            print(f"  Login attempt {login_attempts} redirected to homepage, retrying...")
+            page.goto(ZOLA_LOGIN_URL)
+            page.wait_for_selector("input[type='email']", timeout=15000)
+            page.fill("input[type='email']", ZOLA_EMAIL)
+            page.fill("input[type='password']", ZOLA_PASSWORD)
+            page.wait_for_timeout(500)
+            continue
+        break
  
     page.goto(ZOLA_GUEST_LIST_URL)
-    page.wait_for_selector(ZOLA_EXPORT_BUTTON_SELECTOR, timeout=15000)
+    page.wait_for_load_state("networkidle")
  
-    # Playwright needs to be told to expect a download before the click
-    # that triggers it, so it can capture the file.
-    with page.expect_download() as download_info:
-        page.click(ZOLA_EXPORT_BUTTON_SELECTOR)
-    download = download_info.value
-    download.save_as(ZOLA_DOWNLOAD_PATH)
+    # Fetch the CSV export directly via the API endpoint rather than
+    # clicking through the export button/dropdown. This reuses the
+    # logged-in browser context's session cookies automatically.
+    export_url = ZOLA_BASE_URL + ZOLA_CSV_EXPORT_PATH
+    response = page.request.get(export_url)
+    if not response.ok:
+        raise RuntimeError(
+            f"Zola export request failed: {response.status} {response.status_text}. "
+            f"Double check ZOLA_CSV_EXPORT_PATH is still correct, or fall back to "
+            f"clicking the Export RSVPs button manually."
+        )
+ 
+    with open(ZOLA_DOWNLOAD_PATH, "wb") as f:
+        f.write(response.body())
  
     print(f"Downloaded Zola RSVP export to {ZOLA_DOWNLOAD_PATH}")
     return ZOLA_DOWNLOAD_PATH
@@ -259,7 +314,7 @@ def main():
         csv_path = sys.argv[sys.argv.index("--csv") + 1]
  
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False, slow_mo=200)
+        browser = p.chromium.launch(headless=True, slow_mo=200)
  
         if csv_path is None:
             # Use a separate browser context (isolated cookies/session) for
@@ -275,7 +330,7 @@ def main():
                 return
             finally:
                 zola_context.close()
- 
+
         updates = load_guest_updates(csv_path)
         print(f"Loaded {len(updates)} target statuses from {csv_path}")
  
@@ -289,7 +344,6 @@ def main():
             print("Timed out waiting for a page element -- check your "
                   "selectors in the SITE-SPECIFIC SETTINGS section.")
         finally:
-            input("\nDone. Press Enter to close the browser...")
             browser.close()
 
 
