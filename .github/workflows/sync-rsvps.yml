@@ -2,9 +2,9 @@ name: Sync RSVPs from Zola to Aisle Planner
 
 on:
   schedule:
-    # Runs every Monday at 9am UTC. Adjust the cron expression as needed:
+    # Runs every day at 4am UTC (12am ET). Adjust the cron expression as needed:
     # https://crontab.guru is handy for building these.
-    - cron: "0 9 * * 1"
+    - cron: "0 4 * * *"
   workflow_dispatch: {}  # lets you also trigger it manually from the Actions tab
 
 jobs:
