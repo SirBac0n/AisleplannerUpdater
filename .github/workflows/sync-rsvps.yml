@@ -1,0 +1,33 @@
+name: Sync RSVPs from Zola to Aisle Planner
+
+on:
+  schedule:
+    # Runs every Monday at 9am UTC. Adjust the cron expression as needed:
+    # https://crontab.guru is handy for building these.
+    - cron: "0 9 * * 1"
+  workflow_dispatch: {}  # lets you also trigger it manually from the Actions tab
+
+jobs:
+  sync-rsvps:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install playwright python-dotenv
+          playwright install --with-deps chromium
+
+      - name: Run RSVP sync
+        env:
+          ZOLA_EMAIL: ${{ secrets.ZOLA_EMAIL }}
+          ZOLA_PASSWORD: ${{ secrets.ZOLA_PASSWORD }}
+          AISLEPLANNER_EMAIL: ${{ secrets.AISLEPLANNER_EMAIL }}
+          AISLEPLANNER_PASSWORD: ${{ secrets.AISLEPLANNER_PASSWORD }}
+        run: python update_rsvp_statuses.py
