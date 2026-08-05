@@ -7,13 +7,20 @@ their status icon the right number of times.
 ## Setup:
     pip install playwright python-dotenv
     playwright install chromium
-
+ 
     Create a ".env" file in this same folder (see .env.example) with:
+        ZOLA_EMAIL=you@example.com
+        ZOLA_PASSWORD=yourpassword
         AISLEPLANNER_EMAIL=you@example.com
         AISLEPLANNER_PASSWORD=yourpassword
-
+ 
 ## Usage:
-    python update_rsvp_statuses.py rsvp_data.csv
+    # Fully automated: logs into Zola, downloads the RSVP CSV, then
+    # updates Aisle Planner with it.
+    python update_rsvp_statuses.py
+ 
+    # Or skip the Zola download and use a CSV you already have:
+    python update_rsvp_statuses.py --csv rsvp_data.csv
 
 CSV format expected:
     First Name, Last Name, RSVP Status

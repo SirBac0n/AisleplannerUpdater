@@ -1,26 +1,31 @@
 """
 Aisle Planner RSVP Auto-Updater
 --------------------------------
-Reads guest RSVP data from a CSV (e.g. exported from the "RSVP Bridge" sheet
-you fill in from Zola) and updates each guest's status on Aisle Planner's
-RSVP Summary page by clicking their status icon the right number of times.
-
+Reads guest RSVP data from a CSV (e.g. exported from Zola) and updates 
+each guest's status on Aisle Planner's RSVP Summary page by clicking 
+their status icon the right number of times.
+ 
 BEFORE YOU RUN THIS, YOU MUST FILL IN THE "SITE-SPECIFIC SETTINGS" SECTION
-BELOW. Every value marked TODO needs to be found using your browser's
-inspector (right-click an element on the page -> Inspect). This script
-cannot work with placeholder values.
-
+BELOW.
+ 
 Setup:
     pip install playwright python-dotenv
     playwright install chromium
-
+ 
     Create a ".env" file in this same folder (see .env.example) with:
+        ZOLA_EMAIL=you@example.com
+        ZOLA_PASSWORD=yourpassword
         AISLEPLANNER_EMAIL=you@example.com
         AISLEPLANNER_PASSWORD=yourpassword
-
+ 
 Usage:
-    python update_rsvp_statuses.py rsvp_data.csv
-
+    # Fully automated: logs into Zola, downloads the RSVP CSV, then
+    # updates Aisle Planner with it.
+    python update_rsvp_statuses.py
+ 
+    # Or skip the Zola download and use a CSV you already have:
+    python update_rsvp_statuses.py --csv rsvp_data.csv
+ 
 CSV format expected (see rsvp_bridge_template.xlsx for reference):
     First Name, Last Name, RSVP Status
     (RSVP Status should be one of Zola's own values: "No Response",
@@ -95,10 +100,6 @@ ZOLA_CSV_EXPORT_PATH = "/web-api/v1/guestgroup/export/rsvp-overview"
 # Where the downloaded file should be saved locally
 ZOLA_DOWNLOAD_PATH = "zola_rsvp_export.csv"
 
-# Credentials: read from a .env file (not hardcoded, not committed to git).
-# Create a file named ".env" in the same folder as this script containing:
-#   AISLEPLANNER_EMAIL=you@example.com
-#   AISLEPLANNER_PASSWORD=yourpassword
 import os
 from dotenv import load_dotenv
 
