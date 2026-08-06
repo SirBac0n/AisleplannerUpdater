@@ -2,7 +2,7 @@ name: Sync RSVPs from Zola to Aisle Planner
 
 on:
   schedule:
-    # Runs every day at 4am UTC (12am ET). Adjust the cron expression as needed:
+    # Runs daily at 4am UTC (12am ET). Adjust the cron expression as needed:
     # https://crontab.guru is handy for building these.
     - cron: "0 4 * * *"
   workflow_dispatch: {}  # lets you also trigger it manually from the Actions tab
@@ -23,6 +23,7 @@ jobs:
         run: |
           pip install playwright python-dotenv
           playwright install --with-deps chromium
+          sudo apt-get update && sudo apt-get install -y xvfb
 
       - name: Run RSVP sync
         env:
@@ -30,4 +31,17 @@ jobs:
           ZOLA_PASSWORD: ${{ secrets.ZOLA_PASSWORD }}
           AISLEPLANNER_EMAIL: ${{ secrets.AISLEPLANNER_EMAIL }}
           AISLEPLANNER_PASSWORD: ${{ secrets.AISLEPLANNER_PASSWORD }}
-        run: python update_rsvp_statuses.py
+        # xvfb-run starts a virtual display and runs the script against
+        # it, so Chromium launches with headless=False but there's no
+        # physical screen involved -- required since the script now
+        # expects a real display to render to.
+        run: xvfb-run --auto-servernum python update_rsvp_statuses.py
+
+      - name: Upload debug screenshots (if any)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: |
+            *.png
+          if-no-files-found: ignore

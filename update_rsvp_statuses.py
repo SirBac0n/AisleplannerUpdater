@@ -236,6 +236,115 @@ def download_zola_rsvp_csv(page: Page) -> str:
     return ZOLA_DOWNLOAD_PATH
 
 
+def is_logged_into_zola(page: Page) -> bool:
+    """Checks for the zolaLoggedIn=true cookie, which only gets set on a
+    genuinely authenticated session -- more reliable than inferring
+    success from the URL, which can look fine even when auth silently
+    failed."""
+    cookies = page.context.cookies()
+    return any(c["name"] == "zolaLoggedIn" and c["value"] == "true" for c in cookies)
+
+
+def download_zola_rsvp_csv(page: Page) -> str:
+    """
+    Logs into Zola and downloads the guest/RSVP export CSV.
+    Returns the local path of the downloaded file.
+    """
+    if not ZOLA_EMAIL or not ZOLA_PASSWORD:
+        raise RuntimeError(
+            "Missing Zola credentials. Add ZOLA_EMAIL and ZOLA_PASSWORD to "
+            "your .env file (see .env.example)."
+        )
+    if "TODO" in ZOLA_GUEST_LIST_URL or "TODO" in ZOLA_LOGIN_URL:
+        raise RuntimeError(
+            "ZOLA_GUEST_LIST_URL and/or ZOLA_LOGIN_URL still contain a "
+            "placeholder value. Log into Zola manually, copy the real URLs "
+            "from your browser's address bar, and update the SITE-SPECIFIC "
+            "SETTINGS section at the top of this script."
+        )
+ 
+    login_attempts = 0
+    while True:
+        login_attempts += 1
+        page.goto(ZOLA_LOGIN_URL)
+        page.wait_for_selector("input[type='email']", timeout=15000)
+        page.fill("input[type='email']", ZOLA_EMAIL)
+        page.fill("input[type='password']", ZOLA_PASSWORD)
+ 
+        # Small buffer so the form's own validation (often triggered on
+        # blur/change) has time to run before we click -- clicking too fast
+        # can occasionally beat that validation and the click does nothing.
+        page.wait_for_timeout(500)
+ 
+        page.click("button.LOGIN-submit")
+        # Wait for the URL to change, mostly as a sign the click actually
+        # did something -- but this is NOT what determines success below.
+        try:
+            page.wait_for_url(lambda url: url != ZOLA_LOGIN_URL, timeout=10000)
+        except PWTimeout:
+            pass
+        # Give the zolaLoggedIn cookie a moment to actually get set after
+        # the redirect completes.
+        page.wait_for_timeout(1000)
+ 
+        if is_logged_into_zola(page):
+            break
+ 
+        debug_path = f"zola_login_failure_attempt{login_attempts}.png"
+        page.screenshot(path=debug_path)
+        print(f"  Login attempt {login_attempts} did not result in an "
+              f"authenticated session (no zolaLoggedIn cookie). Landed on "
+              f"{page.url}. Screenshot saved to {debug_path}.")
+ 
+        if login_attempts >= 3:
+            raise RuntimeError(
+                "Zola login failed 3 times in a row -- the zolaLoggedIn "
+                "cookie never got set. Check the saved screenshots for a "
+                "CAPTCHA, 2FA prompt, 'suspicious activity' warning, or "
+                "incorrect credentials. Headless mode is more likely to "
+                "trigger anti-bot checks than a visible browser."
+            )
+ 
+    page.goto(ZOLA_GUEST_LIST_URL)
+    page.wait_for_load_state("networkidle")
+ 
+ 
+    # Fetch the CSV export directly via the API endpoint rather than
+    # clicking through the export button/dropdown. This reuses the
+    # logged-in browser context's session cookies automatically.
+    # The ".csv format" link in Zola's export dropdown points directly at
+    # this API endpoint (found via inspector). We navigate to it directly
+    # rather than clicking through the dropdown UI -- but importantly,
+    # this must be a real page navigation (page.goto), not a background
+    # API call. Zola's server checks for Sec-Fetch-Dest: document (i.e.
+    # "this looks like a real browser navigating here"), which a raw
+    # page.request.get() call doesn't send, and rejects it with a 401
+    # even with valid session cookies attached.
+    export_url = ZOLA_BASE_URL + ZOLA_CSV_EXPORT_PATH
+    response = page.goto(export_url)
+ 
+    if response is None or not response.ok:
+        debug_path = "zola_debug_screenshot.png"
+        page.screenshot(path=debug_path)
+        status = response.status if response else "no response"
+        raise RuntimeError(
+            f"Zola export request failed (status: {status}). "
+            f"Current page URL was: {page.url}. "
+            f"Saved a screenshot to {debug_path} for debugging."
+        )
+ 
+    # The server returns the CSV directly with no Content-Disposition:
+    # attachment header, so Chrome renders it inline as a page instead of
+    # triggering a "download" -- we grab the response body straight from
+    # the navigation instead of waiting for a download event that never
+    # fires.
+    with open(ZOLA_DOWNLOAD_PATH, "wb") as f:
+        f.write(response.body())
+ 
+    print(f"Downloaded Zola RSVP export to {ZOLA_DOWNLOAD_PATH}")
+    return ZOLA_DOWNLOAD_PATH
+
+
 def login(page: Page):
     if not EMAIL or not PASSWORD:
         raise RuntimeError(
@@ -315,7 +424,7 @@ def main():
         csv_path = sys.argv[sys.argv.index("--csv") + 1]
  
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, slow_mo=200)
+        browser = p.chromium.launch(headless=False, slow_mo=200)
  
         if csv_path is None:
             # Use a separate browser context (isolated cookies/session) for
@@ -325,8 +434,10 @@ def main():
             try:
                 csv_path = download_zola_rsvp_csv(zola_page)
             except PWTimeout:
-                print("Timed out on Zola -- check ZOLA_LOGIN_URL, "
-                      "ZOLA_GUEST_LIST_URL, and ZOLA_EXPORT_BUTTON_SELECTOR.")
+                print("Timed out on Zola -- most likely the download never "
+                      "fired (check ZOLA_GUEST_LIST_URL matches the exact "
+                      "page the export link lives on, so the Referer header "
+                      "matches what Zola expects), or ZOLA_LOGIN_URL is wrong.")
                 browser.close()
                 return
             finally:
