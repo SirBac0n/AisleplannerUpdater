@@ -2,7 +2,7 @@ name: Sync RSVPs from Zola to Aisle Planner
 
 on:
   schedule:
-    # Runs daily at 4am UTC (12am ET). Adjust the cron expression as needed:
+    # Runs daily at 4am UTC (12am EDT). Adjust the cron expression as needed:
     # https://crontab.guru is handy for building these.
     - cron: "0 4 * * *"
   workflow_dispatch: {}  # lets you also trigger it manually from the Actions tab
@@ -25,21 +25,25 @@ jobs:
       - name: Install dependencies
         run: |
           pip install playwright python-dotenv
-          playwright install --with-deps chromium
-          sudo apt-get update && sudo apt-get install -y xvfb
+          playwright install chromium
+
+      - name: Restore saved Zola session
+        # zola_auth_state.json (produced once, by hand, via
+        # save_zola_session.py) contains the cookies from an
+        # already-verified login. Storing it base64-encoded in a secret
+        # and decoding it here means this workflow never touches Zola's
+        # login form, so it never triggers the email verification
+        # challenge.
+        env:
+          ZOLA_AUTH_STATE_B64: ${{ secrets.ZOLA_AUTH_STATE_B64 }}
+        run: echo "$ZOLA_AUTH_STATE_B64" | base64 -d > zola_auth_state.json
 
       - name: Run RSVP sync
         env:
-          ZOLA_EMAIL: ${{ secrets.ZOLA_EMAIL }}
-          ZOLA_PASSWORD: ${{ secrets.ZOLA_PASSWORD }}
           AISLEPLANNER_EMAIL: ${{ secrets.AISLEPLANNER_EMAIL }}
           AISLEPLANNER_PASSWORD: ${{ secrets.AISLEPLANNER_PASSWORD }}
           PYTHONUNBUFFERED: "1"  # forces print() to show up live in the log instead of being buffered
-        # xvfb-run starts a virtual display and runs the script against
-        # it, so Chromium launches with headless=False but there's no
-        # physical screen involved -- required since the script now
-        # expects a real display to render to.
-        run: xvfb-run --auto-servernum python -u update_rsvp_statuses.py
+        run: python -u update_rsvp_statuses.py
 
       - name: Upload debug screenshots (if any)
         if: always()

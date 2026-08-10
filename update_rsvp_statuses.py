@@ -17,6 +17,15 @@ Setup:
         ZOLA_PASSWORD=yourpassword
         AISLEPLANNER_EMAIL=you@example.com
         AISLEPLANNER_PASSWORD=yourpassword
+
+One-time setup for Zola's email verification step (see save_zola_session.py):
+    Zola sends an email verification code to any browser/device it doesn't
+    recognize, which this script can't read or enter on its own. Run
+    save_zola_session.py ONCE, by hand, to complete that verification and
+    save the resulting authenticated session to zola_auth_state.json. This
+    script then reuses that saved session on every run instead of logging
+    in fresh, so the email challenge only ever happens that one time (until
+    the saved session eventually expires -- see save_zola_session.py).
  
 Usage:
     # Fully automated: logs into Zola, downloads the RSVP CSV, then
@@ -90,15 +99,20 @@ ZOLA_LOGIN_URL = "https://www.zola.com/account/login"
 ZOLA_GUEST_LIST_URL = "https://www.zola.com/wedding/manage/guests/rsvps/overview"
 
 # The ".csv format" link in Zola's export dropdown points directly at this
-# API endpoint (found via inspector). Since it's just a GET request, once
-# we're logged in (and the browser context holds the session cookie) we
-# can fetch it directly instead of clicking through the UI -- faster and
-# less fragile than waiting on a dropdown to render.
+# API endpoint (found via inspector). We navigate to it directly (via a
+# real page.goto, not a background fetch -- Zola's server checks for
+# Sec-Fetch-Dest: document and rejects anything that doesn't look like a
+# genuine browser navigation, even with valid session cookies attached).
 ZOLA_BASE_URL = "https://www.zola.com"
 ZOLA_CSV_EXPORT_PATH = "/web-api/v1/guestgroup/export/rsvp-overview"
 
 # Where the downloaded file should be saved locally
 ZOLA_DOWNLOAD_PATH = "zola_rsvp_export.csv"
+
+# Where the saved, pre-authenticated Zola session lives (see
+# save_zola_session.py). This file lets the script skip Zola's login form
+# -- and therefore skip the email verification challenge -- entirely.
+ZOLA_AUTH_STATE_PATH = "zola_auth_state.json"
 
 import os
 from dotenv import load_dotenv
@@ -163,86 +177,6 @@ def load_guest_updates(csv_path: str) -> dict:
     return updates
 
 
-def download_zola_rsvp_csv(page: Page) -> str:
-    """
-    Logs into Zola and downloads the guest/RSVP export CSV.
-    Returns the local path of the downloaded file.
-    """
-    if not ZOLA_EMAIL or not ZOLA_PASSWORD:
-        raise RuntimeError(
-            "Missing Zola credentials. Add ZOLA_EMAIL and ZOLA_PASSWORD to "
-            "your .env file (see .env.example)."
-        )
-    if "TODO" in ZOLA_GUEST_LIST_URL or "TODO" in ZOLA_LOGIN_URL:
-        raise RuntimeError(
-            "ZOLA_GUEST_LIST_URL and/or ZOLA_LOGIN_URL still contain a "
-            "placeholder value. Log into Zola manually, copy the real URLs "
-            "from your browser's address bar, and update the SITE-SPECIFIC "
-            "SETTINGS section at the top of this script."
-        )
- 
-    page.goto(ZOLA_LOGIN_URL)
-    page.wait_for_selector("input[type='email']", timeout=15000)
-    page.fill("input[type='email']", ZOLA_EMAIL)
-    page.fill("input[type='password']", ZOLA_PASSWORD)
- 
-    # Small buffer so the form's own validation (often triggered on
-    # blur/change) has time to run before we click -- clicking too fast
-    # can occasionally beat that validation and the click does nothing.
-    page.wait_for_timeout(500)
- 
-    login_attempts = 0
-    while True:
-        login_attempts += 1
-        page.click("button.LOGIN-submit")
-        # Wait for the URL to actually change away from the login page,
-        # rather than trusting networkidle -- SPAs often keep background
-        # connections open, making networkidle fire inconsistently.
-        try:
-            page.wait_for_url(lambda url: url != ZOLA_LOGIN_URL, timeout=10000)
-        except PWTimeout:
-            pass
- 
-        if page.url.rstrip("/") == ZOLA_BASE_URL.rstrip("/"):
-            # Landed on the homepage instead of being logged in -- login
-            # didn't take. Retry once before giving up.
-            if login_attempts >= 3:
-                raise RuntimeError(
-                    "Zola login redirected to the homepage 3 times in a row. "
-                    "Check for a CAPTCHA, 2FA prompt, or incorrect credentials "
-                    "by watching the browser window during a manual run."
-                )
-            print(f"  Login attempt {login_attempts} redirected to homepage, retrying...")
-            page.goto(ZOLA_LOGIN_URL)
-            page.wait_for_selector("input[type='email']", timeout=15000)
-            page.fill("input[type='email']", ZOLA_EMAIL)
-            page.fill("input[type='password']", ZOLA_PASSWORD)
-            page.wait_for_timeout(500)
-            continue
-        break
- 
-    page.goto(ZOLA_GUEST_LIST_URL)
-    page.wait_for_load_state("networkidle")
- 
-    # Fetch the CSV export directly via the API endpoint rather than
-    # clicking through the export button/dropdown. This reuses the
-    # logged-in browser context's session cookies automatically.
-    export_url = ZOLA_BASE_URL + ZOLA_CSV_EXPORT_PATH
-    response = page.request.get(export_url)
-    if not response.ok:
-        raise RuntimeError(
-            f"Zola export request failed: {response.status} {response.status_text}. "
-            f"Double check ZOLA_CSV_EXPORT_PATH is still correct, or fall back to "
-            f"clicking the Export RSVPs button manually."
-        )
- 
-    with open(ZOLA_DOWNLOAD_PATH, "wb") as f:
-        f.write(response.body())
- 
-    print(f"Downloaded Zola RSVP export to {ZOLA_DOWNLOAD_PATH}")
-    return ZOLA_DOWNLOAD_PATH
-
-
 def is_logged_into_zola(page: Page) -> bool:
     """Checks for the zolaLoggedIn=true cookie, which only gets set on a
     genuinely authenticated session -- more reliable than inferring
@@ -254,82 +188,32 @@ def is_logged_into_zola(page: Page) -> bool:
 
 def download_zola_rsvp_csv(page: Page) -> str:
     """
-    Logs into Zola and downloads the guest/RSVP export CSV.
+    Downloads the guest/RSVP export CSV from Zola. Assumes the page's
+    browser context was already created with a saved, pre-authenticated
+    session (see ZOLA_AUTH_STATE_PATH / save_zola_session.py) -- this
+    function no longer logs in itself, since doing so from scratch would
+    trigger Zola's email verification challenge, which this script can't
+    complete on its own.
     Returns the local path of the downloaded file.
     """
-    if not ZOLA_EMAIL or not ZOLA_PASSWORD:
+    if not is_logged_into_zola(page):
         raise RuntimeError(
-            "Missing Zola credentials. Add ZOLA_EMAIL and ZOLA_PASSWORD to "
-            "your .env file (see .env.example)."
+            f"Not logged into Zola. The saved session in "
+            f"{ZOLA_AUTH_STATE_PATH} is missing, invalid, or expired. Run "
+            f"save_zola_session.py again to re-authenticate (you'll need "
+            f"to enter the emailed verification code once)."
         )
-    if "TODO" in ZOLA_GUEST_LIST_URL or "TODO" in ZOLA_LOGIN_URL:
-        raise RuntimeError(
-            "ZOLA_GUEST_LIST_URL and/or ZOLA_LOGIN_URL still contain a "
-            "placeholder value. Log into Zola manually, copy the real URLs "
-            "from your browser's address bar, and update the SITE-SPECIFIC "
-            "SETTINGS section at the top of this script."
-        )
- 
-    login_attempts = 0
-    while True:
-        login_attempts += 1
-        page.goto(ZOLA_LOGIN_URL)
-        page.wait_for_selector("input[type='email']", timeout=15000)
-        page.fill("input[type='email']", ZOLA_EMAIL)
-        page.fill("input[type='password']", ZOLA_PASSWORD)
- 
-        # Small buffer so the form's own validation (often triggered on
-        # blur/change) has time to run before we click -- clicking too fast
-        # can occasionally beat that validation and the click does nothing.
-        page.wait_for_timeout(500)
- 
-        page.click("button.LOGIN-submit")
-        # Wait for the URL to change, mostly as a sign the click actually
-        # did something -- but this is NOT what determines success below.
-        try:
-            page.wait_for_url(lambda url: url != ZOLA_LOGIN_URL, timeout=10000)
-        except PWTimeout:
-            pass
-        # Give the zolaLoggedIn cookie a moment to actually get set after
-        # the redirect completes.
-        page.wait_for_timeout(1000)
- 
-        if is_logged_into_zola(page):
-            break
- 
-        debug_path = f"zola_login_failure_attempt{login_attempts}.png"
-        page.screenshot(path=debug_path)
-        print(f"  Login attempt {login_attempts} did not result in an "
-              f"authenticated session (no zolaLoggedIn cookie). Landed on "
-              f"{page.url}. Screenshot saved to {debug_path}.")
- 
-        if login_attempts >= 3:
-            raise RuntimeError(
-                "Zola login failed 3 times in a row -- the zolaLoggedIn "
-                "cookie never got set. Check the saved screenshots for a "
-                "CAPTCHA, 2FA prompt, 'suspicious activity' warning, or "
-                "incorrect credentials. Headless mode is more likely to "
-                "trigger anti-bot checks than a visible browser."
-            )
- 
+
     page.goto(ZOLA_GUEST_LIST_URL)
     page.wait_for_load_state("networkidle")
- 
- 
-    # Fetch the CSV export directly via the API endpoint rather than
-    # clicking through the export button/dropdown. This reuses the
-    # logged-in browser context's session cookies automatically.
-    # The ".csv format" link in Zola's export dropdown points directly at
-    # this API endpoint (found via inspector). We navigate to it directly
-    # rather than clicking through the dropdown UI -- but importantly,
-    # this must be a real page navigation (page.goto), not a background
-    # API call. Zola's server checks for Sec-Fetch-Dest: document (i.e.
-    # "this looks like a real browser navigating here"), which a raw
-    # page.request.get() call doesn't send, and rejects it with a 401
-    # even with valid session cookies attached.
+
+    # Fetch the CSV export via a real page navigation (not a background
+    # API call) -- Zola's server checks for Sec-Fetch-Dest: document and
+    # rejects a raw page.request.get() with a 401 even with valid session
+    # cookies attached.
     export_url = ZOLA_BASE_URL + ZOLA_CSV_EXPORT_PATH
     response = page.goto(export_url)
- 
+
     if response is None or not response.ok:
         debug_path = "zola_debug_screenshot.png"
         page.screenshot(path=debug_path)
@@ -337,9 +221,11 @@ def download_zola_rsvp_csv(page: Page) -> str:
         raise RuntimeError(
             f"Zola export request failed (status: {status}). "
             f"Current page URL was: {page.url}. "
-            f"Saved a screenshot to {debug_path} for debugging."
+            f"Saved a screenshot to {debug_path} for debugging. "
+            f"A 401 here likely means the saved session has expired -- "
+            f"run save_zola_session.py again."
         )
- 
+
     # The server returns the CSV directly with no Content-Disposition:
     # attachment header, so Chrome renders it inline as a page instead of
     # triggering a "download" -- we grab the response body straight from
@@ -347,7 +233,7 @@ def download_zola_rsvp_csv(page: Page) -> str:
     # fires.
     with open(ZOLA_DOWNLOAD_PATH, "wb") as f:
         f.write(response.body())
- 
+
     print(f"Downloaded Zola RSVP export to {ZOLA_DOWNLOAD_PATH}")
     return ZOLA_DOWNLOAD_PATH
 
@@ -359,7 +245,6 @@ def login(page: Page):
             "AISLEPLANNER_EMAIL and AISLEPLANNER_PASSWORD set (see .env.example)."
         )
     page.goto(LOGIN_URL)
-    # TODO: confirm these field selectors match the actual login form
     page.fill("input[type='text']", EMAIL)
     page.fill("input[type='password']", PASSWORD)
     page.click("button[type='submit']")
@@ -429,23 +314,38 @@ def main():
     csv_path = None
     if "--csv" in sys.argv:
         csv_path = sys.argv[sys.argv.index("--csv") + 1]
+
+    if csv_path is None and not os.path.exists(ZOLA_AUTH_STATE_PATH):
+        print(
+            f"No saved Zola session found at {ZOLA_AUTH_STATE_PATH}.\n"
+            f"Run save_zola_session.py once, by hand, to log in and "
+            f"complete Zola's email verification step -- this script "
+            f"can't do that part on its own.\n"
+            f"Alternatively, run with --csv to skip Zola entirely and "
+            f"use a CSV you already have."
+        )
+        sys.exit(1)
  
     with sync_playwright() as p:
-        # headless=False here, running against Xvfb's virtual display (set
-        # up in the GitHub Actions workflow via xvfb-run). This is a real,
-        # non-headless Chromium -- it just renders to a virtual framebuffer
-        # instead of a physical screen. Some sites' bot detection targets
-        # headless=True specifically, so this sometimes gets past that --
-        # but it's not guaranteed, since sophisticated detection can catch
-        # other signals too.
-        browser = p.chromium.launch(headless=False, slow_mo=SLOW_MO_MS)
+        # headless=True since the saved Zola session (from
+        # save_zola_session.py) means this script never touches the login
+        # form -- the main trigger for Zola's bot detection is gone. If
+        # you start seeing 401s again despite a valid saved session, that
+        # may mean Zola is validating the session cookie against browser
+        # fingerprint consistency; switch back to headless=False (and run
+        # under Xvfb in CI) as a fallback in that case.
+        browser = p.chromium.launch(headless=True, slow_mo=SLOW_MO_MS)
  
         try:
             if csv_path is None:
-                # Use a separate browser context (isolated cookies/session)
-                # for Zola so its login doesn't interfere with Aisle
-                # Planner's.
-                zola_context = browser.new_context(accept_downloads=True)
+                # Load the pre-authenticated session saved by
+                # save_zola_session.py instead of logging in fresh --
+                # logging in fresh would trigger Zola's email verification
+                # challenge, which this script can't complete on its own.
+                zola_context = browser.new_context(
+                    accept_downloads=True,
+                    storage_state=ZOLA_AUTH_STATE_PATH,
+                )
                 zola_page = zola_context.new_page()
                 try:
                     csv_path = download_zola_rsvp_csv(zola_page)
@@ -453,7 +353,7 @@ def main():
                     print("Timed out on Zola -- most likely the download never "
                           "fired (check ZOLA_GUEST_LIST_URL matches the exact "
                           "page the export link lives on, so the Referer header "
-                          "matches what Zola expects), or ZOLA_LOGIN_URL is wrong.")
+                          "matches what Zola expects).")
                     return
                 finally:
                     zola_context.close()
@@ -477,10 +377,9 @@ def main():
                 if sys.stdin.isatty():
                     input("\nDone. Press Enter to close the browser...")
         finally:
-            # Always close the browser, even if a RuntimeError (like the
-            # "login failed 3 times" error) propagates past both try
-            # blocks above -- otherwise an orphaned Chromium process can
-            # hang around and delay the job from actually finishing.
+            # Always close the browser, even if a RuntimeError propagates
+            # past both try blocks above -- otherwise an orphaned Chromium
+            # process can hang around and delay the job from finishing.
             browser.close()
 
 
