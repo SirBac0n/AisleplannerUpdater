@@ -440,41 +440,47 @@ def main():
         # other signals too.
         browser = p.chromium.launch(headless=False, slow_mo=SLOW_MO_MS)
  
-        if csv_path is None:
-            # Use a separate browser context (isolated cookies/session) for
-            # Zola so its login doesn't interfere with Aisle Planner's.
-            zola_context = browser.new_context(accept_downloads=True)
-            zola_page = zola_context.new_page()
-            try:
-                csv_path = download_zola_rsvp_csv(zola_page)
-            except PWTimeout:
-                print("Timed out on Zola -- most likely the download never "
-                      "fired (check ZOLA_GUEST_LIST_URL matches the exact "
-                      "page the export link lives on, so the Referer header "
-                      "matches what Zola expects), or ZOLA_LOGIN_URL is wrong.")
-                browser.close()
-                return
-            finally:
-                zola_context.close()
- 
-        updates = load_guest_updates(csv_path)
-        print(f"Loaded {len(updates)} target statuses from {csv_path}")
- 
-        ap_context = browser.new_context()
-        page = ap_context.new_page()
-        page.set_viewport_size({"width": 1920, "height": 1080})
         try:
-            login(page)
-            update_rsvps(page, updates)
-        except PWTimeout:
-            print("Timed out waiting for a page element -- check your "
-                  "selectors in the SITE-SPECIFIC SETTINGS section.")
+            if csv_path is None:
+                # Use a separate browser context (isolated cookies/session)
+                # for Zola so its login doesn't interfere with Aisle
+                # Planner's.
+                zola_context = browser.new_context(accept_downloads=True)
+                zola_page = zola_context.new_page()
+                try:
+                    csv_path = download_zola_rsvp_csv(zola_page)
+                except PWTimeout:
+                    print("Timed out on Zola -- most likely the download never "
+                          "fired (check ZOLA_GUEST_LIST_URL matches the exact "
+                          "page the export link lives on, so the Referer header "
+                          "matches what Zola expects), or ZOLA_LOGIN_URL is wrong.")
+                    return
+                finally:
+                    zola_context.close()
+ 
+            updates = load_guest_updates(csv_path)
+            print(f"Loaded {len(updates)} target statuses from {csv_path}")
+ 
+            ap_context = browser.new_context()
+            page = ap_context.new_page()
+            page.set_viewport_size({"width": 1920, "height": 1080})
+            try:
+                login(page)
+                update_rsvps(page, updates)
+            except PWTimeout:
+                print("Timed out waiting for a page element -- check your "
+                      "selectors in the SITE-SPECIFIC SETTINGS section.")
+            finally:
+                # Skip the "press Enter to close" prompt when running
+                # unattended (cron, GitHub Actions, etc.) -- there's no one
+                # there to press it, and it would just hang forever.
+                if sys.stdin.isatty():
+                    input("\nDone. Press Enter to close the browser...")
         finally:
-            # Skip the "press Enter to close" prompt when running
-            # unattended (cron, GitHub Actions, etc.) -- there's no one
-            # there to press it, and it would just hang forever.
-            if sys.stdin.isatty():
-                input("\nDone. Press Enter to close the browser...")
+            # Always close the browser, even if a RuntimeError (like the
+            # "login failed 3 times" error) propagates past both try
+            # blocks above -- otherwise an orphaned Chromium process can
+            # hang around and delay the job from actually finishing.
             browser.close()
 
 
