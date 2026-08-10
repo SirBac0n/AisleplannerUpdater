@@ -109,6 +109,13 @@ ZOLA_PASSWORD = os.environ.get("ZOLA_PASSWORD")
 EMAIL = os.environ.get("AISLEPLANNER_EMAIL")
 PASSWORD = os.environ.get("AISLEPLANNER_PASSWORD")
 
+# How much to slow down each Playwright action, in milliseconds. Higher
+# values make it easier to watch what's happening in a visible browser;
+# 0 (the default) is fastest for unattended runs (CI). Override by setting
+# the SLOW_MO_MS environment variable, e.g. SLOW_MO_MS=200 for local
+# debugging with a visible browser.
+SLOW_MO_MS = int(os.environ.get("SLOW_MO_MS", "0"))
+
 
 def get_current_status(status_div) -> str:
     """
@@ -424,7 +431,14 @@ def main():
         csv_path = sys.argv[sys.argv.index("--csv") + 1]
  
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False, slow_mo=200)
+        # headless=False here, running against Xvfb's virtual display (set
+        # up in the GitHub Actions workflow via xvfb-run). This is a real,
+        # non-headless Chromium -- it just renders to a virtual framebuffer
+        # instead of a physical screen. Some sites' bot detection targets
+        # headless=True specifically, so this sometimes gets past that --
+        # but it's not guaranteed, since sophisticated detection can catch
+        # other signals too.
+        browser = p.chromium.launch(headless=False, slow_mo=SLOW_MO_MS)
  
         if csv_path is None:
             # Use a separate browser context (isolated cookies/session) for
@@ -442,7 +456,7 @@ def main():
                 return
             finally:
                 zola_context.close()
-
+ 
         updates = load_guest_updates(csv_path)
         print(f"Loaded {len(updates)} target statuses from {csv_path}")
  
@@ -456,6 +470,11 @@ def main():
             print("Timed out waiting for a page element -- check your "
                   "selectors in the SITE-SPECIFIC SETTINGS section.")
         finally:
+            # Skip the "press Enter to close" prompt when running
+            # unattended (cron, GitHub Actions, etc.) -- there's no one
+            # there to press it, and it would just hang forever.
+            if sys.stdin.isatty():
+                input("\nDone. Press Enter to close the browser...")
             browser.close()
 
 

@@ -10,6 +10,9 @@ on:
 jobs:
   sync-rsvps:
     runs-on: ubuntu-latest
+    # Hard ceiling so a genuine hang fails loudly after 15 minutes instead
+    # of silently running (and burning Actions minutes) for hours.
+    timeout-minutes: 15
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
@@ -31,11 +34,12 @@ jobs:
           ZOLA_PASSWORD: ${{ secrets.ZOLA_PASSWORD }}
           AISLEPLANNER_EMAIL: ${{ secrets.AISLEPLANNER_EMAIL }}
           AISLEPLANNER_PASSWORD: ${{ secrets.AISLEPLANNER_PASSWORD }}
+          PYTHONUNBUFFERED: "1"  # forces print() to show up live in the log instead of being buffered
         # xvfb-run starts a virtual display and runs the script against
         # it, so Chromium launches with headless=False but there's no
         # physical screen involved -- required since the script now
         # expects a real display to render to.
-        run: xvfb-run --auto-servernum python update_rsvp_statuses.py
+        run: xvfb-run --auto-servernum python -u update_rsvp_statuses.py
 
       - name: Upload debug screenshots (if any)
         if: always()
