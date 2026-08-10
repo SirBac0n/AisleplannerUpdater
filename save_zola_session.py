@@ -21,9 +21,11 @@ When to re-run this:
     401 error -- sessions don't last forever, and Zola may eventually
     ask for verification again even for a previously-trusted browser
 
-Usage:
+Setup:
     pip install playwright python-dotenv
     playwright install chromium
+
+Usage:
     python save_zola_session.py
 """
 
