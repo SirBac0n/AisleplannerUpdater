@@ -211,28 +211,50 @@ def download_zola_rsvp_csv(page: Page) -> str:
     # API call) -- Zola's server checks for Sec-Fetch-Dest: document and
     # rejects a raw page.request.get() with a 401 even with valid session
     # cookies attached.
+    #
+    # The server's response has varied between two behaviors we've seen:
+    #   (a) returns the CSV inline with no Content-Disposition header, so
+    #       it renders as a normal page -- page.goto() returns a regular
+    #       Response we can read via response.body()
+    #   (b) returns it as a real file attachment, which makes Playwright
+    #       abort the navigation with a "Download is starting" error
+    #       instead of returning a Response -- we have to catch that and
+    #       grab the file via the download event instead
+    # Handling both so this keeps working regardless of which one Zola
+    # decides to do on a given run.
     export_url = ZOLA_BASE_URL + ZOLA_CSV_EXPORT_PATH
-    response = page.goto(export_url)
+    response = None
+    downloaded_via_event = False
+    try:
+        with page.expect_download(timeout=15000) as download_info:
+            try:
+                response = page.goto(export_url)
+            except Exception:
+                # Navigation aborted because a real download started --
+                # expected in case (b) above, not an actual failure.
+                pass
+        download = download_info.value
+        download.save_as(ZOLA_DOWNLOAD_PATH)
+        downloaded_via_event = True
+    except PWTimeout:
+        # No download event fired within 15s -- likely case (a) above,
+        # where response (from the goto call) holds the actual content.
+        pass
 
-    if response is None or not response.ok:
-        debug_path = "zola_debug_screenshot.png"
-        page.screenshot(path=debug_path)
-        status = response.status if response else "no response"
-        raise RuntimeError(
-            f"Zola export request failed (status: {status}). "
-            f"Current page URL was: {page.url}. "
-            f"Saved a screenshot to {debug_path} for debugging. "
-            f"A 401 here likely means the saved session has expired -- "
-            f"run save_zola_session.py again."
-        )
-
-    # The server returns the CSV directly with no Content-Disposition:
-    # attachment header, so Chrome renders it inline as a page instead of
-    # triggering a "download" -- we grab the response body straight from
-    # the navigation instead of waiting for a download event that never
-    # fires.
-    with open(ZOLA_DOWNLOAD_PATH, "wb") as f:
-        f.write(response.body())
+    if not downloaded_via_event:
+        if response is None or not response.ok:
+            debug_path = "zola_debug_screenshot.png"
+            page.screenshot(path=debug_path)
+            status = response.status if response else "no response"
+            raise RuntimeError(
+                f"Zola export request failed (status: {status}). "
+                f"Current page URL was: {page.url}. "
+                f"Saved a screenshot to {debug_path} for debugging. "
+                f"A 401 here likely means the saved session has expired -- "
+                f"run save_zola_session.py again."
+            )
+        with open(ZOLA_DOWNLOAD_PATH, "wb") as f:
+            f.write(response.body())
 
     print(f"Downloaded Zola RSVP export to {ZOLA_DOWNLOAD_PATH}")
     return ZOLA_DOWNLOAD_PATH
