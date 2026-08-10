@@ -43,11 +43,11 @@ challenge only ever happens this one time.
     pip install playwright python-dotenv
     playwright install chromium
  
-Create a ".env" file in this same folder (see .env.example) with:
-    ZOLA_EMAIL=you@example.com
-    ZOLA_PASSWORD=yourpassword
-    AISLEPLANNER_EMAIL=you@example.com
-    AISLEPLANNER_PASSWORD=yourpassword
+    Create a ".env" file in this same folder (see .env.example) with:
+        ZOLA_EMAIL=you@example.com
+        ZOLA_PASSWORD=yourpassword
+        AISLEPLANNER_EMAIL=you@example.com
+        AISLEPLANNER_PASSWORD=yourpassword
  
 ### Usage:
   - Fully automated: logs into Zola, downloads the RSVP CSV, then
