@@ -62,3 +62,36 @@ CSV format expected:
     (RSVP Status should be one of Zola's own values: "No Response",
     "Attending", "Declined" -- the script translates these into Aisle
     Planner's status cycle)
+
+## export_thank_you_list.py:
+
+Pulls two things from Zola (using the same saved session as the scripts
+above -- run save_zola_session.py first if you haven't) and merges them
+into one CSV for mail-merging thank-you letters:
+
+  1. Who gave what, from Zola's "Download thank you list" export on the
+     gift tracker page.
+  2. Each guest household's mailing address, from the guest list /
+     "Address envelopes" data -- Zola's gift export itself almost never
+     has the giver's address filled in, since most gifts ship from an
+     external retailer (Amazon, Target, etc.) straight to you rather than
+     from the giver's home.
+
+Gift givers are matched to guest-list households by name, since Zola
+doesn't link the two internally. Nicknames or names that don't exactly
+match a guest-list entry (e.g. "Grandma Harmon") won't match automatically
+and are still included in the output with blank address fields, so you
+can fill them in by hand -- the script prints which ones need that at
+the end of each run.
+
+### Setup:
+    pip install playwright python-dotenv
+    playwright install chromium
+
+### Usage:
+    python export_thank_you_list.py
+    python export_thank_you_list.py --out my_thank_you_list.csv
+
+Output CSV columns: Gift Giver (as entered in Zola), Match Status,
+Address Line 1-4 (Zola's pre-formatted envelope block), Gifts (semicolon
+-separated if someone gave more than one), Already Thanked.
